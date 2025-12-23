@@ -1,0 +1,82 @@
+name: Triggered UI Tests from Main Repo
+
+# Цей workflow запускається автоматично після успішного 
+# проходження unit-тестів основного репозиторію
+
+on:
+  repository_dispatch:
+    types: [trigger-ui-tests]
+
+jobs:
+  ui-tests:
+    name: Run UI Tests (Triggered from Main)
+    runs-on: ubuntu-latest
+    
+    strategy:
+      matrix:
+        browser: [chrome, firefox]
+      fail-fast: false
+    
+    steps:
+      - name: Log trigger event
+        run: |
+          echo "🚀 UI Tests triggered from main repository"
+          echo "Main repo commit: ${{ github.event.client_payload.commit_sha }}"
+          echo "Main repo branch: ${{ github.event.client_payload.branch }}"
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20.x'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Setup Chrome
+        if: matrix.browser == 'chrome'
+        uses: browser-actions/setup-chrome@v1
+        with:
+          chrome-version: stable
+
+      - name: Setup Firefox
+        if: matrix.browser == 'firefox'
+        uses: browser-actions/setup-firefox@v1
+        with:
+          firefox-version: latest
+
+      - name: Run UI tests
+        run: |
+          if [ "${{ matrix.browser }}" == "chrome" ]; then
+            npm run test:chrome
+          else
+            npm run test:firefox
+          fi
+        env:
+          HEADLESS: 'true'
+          CI: 'true'
+          BROWSER: ${{ matrix.browser }}
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: triggered-test-results-${{ matrix.browser }}
+          path: |
+            junit.xml
+            screenshots/
+          retention-days: 7
+
+      - name: Comment on main repo commit
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.MAIN_REPO_TOKEN }}
+          script: |
+            const status = '${{ job.status }}' === 'success' ? '✅ passed' : '❌ failed';
+            const browser = '${{ matrix.browser }}';
+            console.log(`UI Tests (${browser}): ${status}`);
+

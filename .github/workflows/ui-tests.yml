@@ -1,0 +1,107 @@
+name: UI Tests CI
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+  repository_dispatch:
+    types: [trigger-ui-tests]
+
+jobs:
+  build:
+    name: Build and Check
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20.x'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build project
+        run: npm run build
+
+      - name: Run linter
+        run: npm run lint
+
+  test:
+    name: Run UI Tests
+    needs: build
+    runs-on: ubuntu-latest
+    
+    strategy:
+      matrix:
+        browser: [chrome, firefox]
+      fail-fast: false
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20.x'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Setup Chrome
+        if: matrix.browser == 'chrome'
+        uses: browser-actions/setup-chrome@v1
+        with:
+          chrome-version: stable
+
+      - name: Setup Firefox
+        if: matrix.browser == 'firefox'
+        uses: browser-actions/setup-firefox@v1
+        with:
+          firefox-version: latest
+
+      - name: Run tests on ${{ matrix.browser }}
+        run: |
+          if [ "${{ matrix.browser }}" == "chrome" ]; then
+            npm run test:chrome
+          else
+            npm run test:firefox
+          fi
+        env:
+          HEADLESS: 'true'
+          CI: 'true'
+          BROWSER: ${{ matrix.browser }}
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ matrix.browser }}
+          path: |
+            junit.xml
+            screenshots/
+          retention-days: 7
+
+  notify:
+    name: Test Results
+    needs: test
+    runs-on: ubuntu-latest
+    if: always()
+    
+    steps:
+      - name: Check test status
+        run: |
+          if [ "${{ needs.test.result }}" == "success" ]; then
+            echo "✅ All UI tests passed!"
+          else
+            echo "❌ Some UI tests failed"
+            exit 1
+          fi

@@ -1,0 +1,189 @@
+# Цей файл потрібно помістити в основний репозиторій:
+# .github/workflows/main.yml
+
+name: Main Project CI
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  # JOB 1: Збірка та перевірка коду
+  build:
+    name: Build Project
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 📦 Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20.x'
+          cache: 'npm'
+
+      - name: 📚 Install dependencies
+        run: npm ci
+
+      - name: 🔨 Build project
+        run: npm run build
+
+      - name: 💾 Cache build
+        uses: actions/cache@v3
+        with:
+          path: |
+            node_modules
+            dist
+          key: ${{ runner.os }}-build-${{ hashFiles('**/package-lock.json') }}
+
+  # JOB 2: Запуск лінтера
+  lint:
+    name: Run Linter
+    runs-on: ubuntu-latest
+    needs: build
+    
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 📦 Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20.x'
+          cache: 'npm'
+
+      - name: 📚 Install dependencies
+        run: npm ci
+
+      - name: 🔍 Run ESLint
+        run: npm run lint
+
+  # JOB 3: Запуск unit-тестів
+  test:
+    name: Run Unit Tests
+    runs-on: ubuntu-latest
+    needs: build
+    
+    strategy:
+      matrix:
+        node-version: [18.x, 20.x]
+    
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 📦 Setup Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: 'npm'
+
+      - name: 📚 Install dependencies
+        run: npm ci
+
+      - name: 🧪 Run unit tests
+        run: npm test
+
+      - name: 📊 Upload coverage
+        if: matrix.node-version == '20.x'
+        uses: codecov/codecov-action@v3
+        with:
+          files: ./coverage/coverage-final.json
+          flags: unittests
+
+  # JOB 4: Тригер UI-тестів (тільки якщо все пройшло успішно)
+  trigger-ui-tests:
+    name: Trigger UI Tests
+    needs: [build, lint, test]
+    runs-on: ubuntu-latest
+    if: success() && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    
+    steps:
+      - name: 🚀 Trigger UI Tests Repository
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.UI_TESTS_REPO_TOKEN }}
+          repository: ${{ github.repository_owner }}/selenium-ui-tests
+          event-type: trigger-ui-tests
+          client-payload: |
+            {
+              "commit_sha": "${{ github.sha }}",
+              "commit_message": "${{ github.event.head_commit.message }}",
+              "branch": "${{ github.ref_name }}",
+              "repository": "${{ github.repository }}",
+              "actor": "${{ github.actor }}",
+              "run_id": "${{ github.run_id }}"
+            }
+
+      - name: ✅ Log trigger event
+        run: |
+          echo "✅ Successfully triggered UI tests repository"
+          echo "📝 Commit: ${{ github.sha }}"
+          echo "🌿 Branch: ${{ github.ref_name }}"
+
+  # JOB 5: Підсумковий звіт
+  report:
+    name: Pipeline Summary
+    needs: [build, lint, test, trigger-ui-tests]
+    runs-on: ubuntu-latest
+    if: always()
+    
+    steps:
+      - name: 📋 Check overall status
+        run: |
+          echo "==================================================="
+          echo "            Pipeline Execution Summary            "
+          echo "==================================================="
+          echo ""
+          echo "Build:       ${{ needs.build.result }}"
+          echo "Lint:        ${{ needs.lint.result }}"
+          echo "Tests:       ${{ needs.test.result }}"
+          echo "UI Trigger:  ${{ needs.trigger-ui-tests.result }}"
+          echo ""
+          echo "==================================================="
+          
+          # Перевірка на помилки
+          if [[ "${{ needs.build.result }}" != "success" ]] || \
+             [[ "${{ needs.lint.result }}" != "success" ]] || \
+             [[ "${{ needs.test.result }}" != "success" ]]; then
+            echo "❌ Pipeline FAILED"
+            exit 1
+          else
+            echo "✅ Pipeline PASSED"
+          fi
+
+      - name: 💬 Comment on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const status = '${{ needs.test.result }}' === 'success' ? '✅' : '❌';
+            const comment = `
+            ## ${status} CI Pipeline Results
+            
+            | Job | Status |
+            |-----|--------|
+            | Build | ${{ needs.build.result }} |
+            | Lint | ${{ needs.lint.result }} |
+            | Tests | ${{ needs.test.result }} |
+            | UI Tests Triggered | ${{ needs.trigger-ui-tests.result }} |
+            
+            **Commit:** \`${{ github.sha }}\`
+            **Author:** @${{ github.actor }}
+            `;
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
+
+# Секрети які потрібно додати в GitHub Settings:
+# 1. UI_TESTS_REPO_TOKEN - Personal Access Token з правами repo та workflow
+#    для тригерингу UI-тестів в іншому репозиторії
+
